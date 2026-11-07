@@ -74,6 +74,7 @@ $("#videoBtn").addEventListener("click", () => {
   const fd = new FormData();
   fd.append("strength", $("#strength").value);
   fd.append("mode", $("#mode").value);
+  fd.append("watermarkId", $("#watermarkId").value.trim());
   fd.append("video", videoFile);
   const xhr = new XMLHttpRequest();
   const bar = $("#uploadBar");
@@ -84,6 +85,7 @@ $("#videoBtn").addEventListener("click", () => {
     bar.classList.add("hidden");
     bar.firstElementChild.style.width = "0";
     if (xhr.status >= 300) alert(JSON.parse(xhr.responseText || "{}").error || "Upload failed");
+    else $("#watermarkId").value = "";
     loadVideos();
     updateButtons();
   };
@@ -131,6 +133,7 @@ function renderVideo(v) {
   const preview = openPreviews.has(v.id) ? `<video src="/api/videos/${v.id}/stream" controls playsinline></video>` : "";
   return `<li class="vid" id="v-${v.id}">
     <div class="top"><span class="name" title="${esc(v.name)}">${esc(v.name)}</span>${status}</div>
+    ${v.watermarkId ? `<div class="meta">ID <span class="wid">${esc(v.watermarkId)}</span></div>` : ""}
     <div class="meta">${meta}</div>${bar}
     ${actions ? `<div class="actions">${actions}</div>` : ""}${preview}
   </li>`;
@@ -223,9 +226,9 @@ function renderResult(r) {
   const acc = `${(r.bitAccuracy * 100).toFixed(1)}%`;
   const head =
     r.verdict === "match"
-      ? `<h4>Watermark found</h4><p>This screenshot comes from <b>${esc(r.video.name)}</b>.</p>`
+      ? `<h4>Watermark found</h4><p>${r.video.watermarkId ? `ID <span class="wid">${esc(r.video.watermarkId)}</span> · ` : ""}This screenshot comes from <b>${esc(r.video.name)}</b>.</p>`
       : r.verdict === "weak"
-        ? `<h4>Possible match</h4><p>Weak signal for <b>${esc(r.video.name)}</b>. Try a less cropped screenshot or draw a box around the video.</p>`
+        ? `<h4>Possible match</h4><p>Weak signal for ${r.video.watermarkId ? `ID <span class="wid">${esc(r.video.watermarkId)}</span>, ` : ""}<b>${esc(r.video.name)}</b>. Try a less cropped screenshot or draw a box around the video.</p>`
         : `<h4>No watermark found</h4><p>The closest registered video only agrees on ${acc} of bits, which is what a random image gives.</p>`;
   const detail = r.verdict === "none" ? "" :
     `<p>${r.matchedBits} of ${r.nbits} bits match (${acc}), using the ${VARIANT[r.variant]}. Chance this is a false match: ${odds(r.log10FalsePositive)}.</p>`;

@@ -4,6 +4,7 @@ Invisible watermarking for videos with Meta's **PixelSeal**, built to recognise
 screenshots that clients take of your Facebook videos and send in Messenger.
 
 1. Upload a video. Every frame gets an invisible 256-bit watermark that is unique to that video.
+   Optionally give it your own ID; matches then report that ID.
 2. Download the watermarked MP4 and post it on Facebook.
 3. Upload or paste a screenshot. The app finds the video area, extracts the bits and tells you which video it came from.
 
@@ -36,6 +37,7 @@ conda-forge picks a CUDA build when it detects an NVIDIA driver. `npm run setup`
 | Server | `server.js` | Express API, uploads, job queue, registry |
 | Model worker | `worker/seal_worker.py` | Long-running PixelSeal process; Node talks to it with JSON lines over stdin/stdout |
 | Matching | `lib/match.js` | Compares extracted bits with every registered video and computes false-match odds |
+| Secret | `data/secret.key` | Turns a custom watermark ID into its 256 bits (HMAC-SHA256), so nobody else can compute the watermark for an ID. Created on first start. |
 | Registry | `data/videos.json` | Which 256-bit message belongs to which video. **Back this up**: without it, screenshots cannot be traced. |
 
 Two workers run: one for video jobs, one for screenshot checks, so checks stay fast while a video is processing.
@@ -44,7 +46,7 @@ Two workers run: one for video jobs, one for screenshot checks, so checks stay f
 
 | Method | Path | |
 |---|---|---|
-| POST | `/api/videos` | multipart `video`, optional `strength` (0.05 to 1, default 0.4) and `mode` (`smooth` or `robust`). Returns the job; poll it. |
+| POST | `/api/videos` | multipart `video`, optional `watermarkId` (up to 64 characters, unique), `strength` (0.05 to 1, default 0.4) and `mode` (`smooth` or `robust`). Send text fields before the file. Returns the job; poll it. |
 | GET | `/api/videos`, `/api/videos/:id` | List or poll status and progress |
 | GET | `/api/videos/:id/download` | Watermarked MP4 |
 | DELETE | `/api/videos/:id` | Remove video and its watermark record |

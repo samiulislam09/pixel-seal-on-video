@@ -31,6 +31,25 @@ const embedWorker = new SealWorker({ name: "embed", python: PYTHON, script: SCRI
 const detectWorker = new SealWorker({ name: "detect", python: PYTHON, script: SCRIPT, threads: 2 });
 const registry = new Registry(path.join(ROOT, "data", "videos.json"));
 
+// Secret used to turn a custom watermark ID into 256 bits. Without it, nobody can compute
+// the watermark for a given ID. The registry stores the bits, so detection never needs it.
+const SECRET_FILE = path.join(ROOT, "data", "secret.key");
+if (!fs.existsSync(SECRET_FILE)) fs.writeFileSync(SECRET_FILE, crypto.randomBytes(32).toString("hex"), { mode: 0o600 });
+const SECRET = fs.readFileSync(SECRET_FILE, "utf8").trim();
+
+const toBits = (buf) => [...buf].map((b) => b.toString(2).padStart(8, "0")).join("");
+const bitsForId = (watermarkId) => toBits(crypto.createHmac("sha256", SECRET).update(watermarkId, "utf8").digest());
+
+function validateWatermarkId(raw) {
+  const id = String(raw ?? "").trim();
+  if (id === "") return { id: null };
+  if (id.length > 64) return { error: "The ID can be at most 64 characters." };
+  if (/[\u0000-\u001f\u007f]/.test(id)) return { error: "The ID cannot contain control characters." };
+  const taken = registry.videos.find((v) => v.status !== "failed" && v.watermarkId?.toLowerCase() === id.toLowerCase());
+  if (taken) return { error: `The ID "${id}" is already used by "${taken.name}". Choose another, or delete that video first.` };
+  return { id };
+}
+
 function startJob(v) {
   const started = Date.now();
   let lastSave = 0;
@@ -124,14 +143,20 @@ app.get("/api/videos/:id", (req, res) => {
 
 app.post("/api/videos", uploadVideo.single("video"), (req, res) => {
   if (!req.file) return res.status(400).json({ error: "Upload a video file (mp4, mov, mkv, webm, avi)." });
+  const wid = validateWatermarkId(req.body.watermarkId);
+  if (wid.error) {
+    fs.rm(req.file.path, { force: true }, () => {});
+    return res.status(400).json({ error: wid.error });
+  }
   const strength = Math.min(1, Math.max(0.05, Number(req.body.strength) || 0.4));
   const mode = req.body.mode === "robust" ? "robust" : "smooth";
   const id = crypto.randomBytes(6).toString("hex");
-  const bits = [...crypto.randomBytes(32)].map((b) => b.toString(2).padStart(8, "0")).join("");
+  const bits = wid.id ? bitsForId(wid.id) : toBits(crypto.randomBytes(32));
   const base = path.parse(req.file.originalname).name.replace(/[^\w.-]+/g, "_").slice(0, 60) || "video";
   const v = registry.add({
     id,
     name: req.file.originalname,
+    watermarkId: wid.id,
     input: req.file.filename,
     output: `${base}-watermarked-${id}.mp4`,
     sizeIn: req.file.size,

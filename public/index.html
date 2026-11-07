@@ -24,17 +24,22 @@
       <small>MP4, MOV, MKV, WebM. Audio is kept.</small>
     </label>
     <div class="row">
+      <label for="watermarkId">Watermark ID</label>
+      <input type="text" id="watermarkId" maxlength="64" placeholder="Optional, e.g. S21-ULTRA-POST-07" autocomplete="off" />
+    </div>
+    <p class="hint">Your own label for this video, shown when a screenshot is matched. Leave empty for a random one. Each ID can be used once.</p>
+    <div class="row">
       <label for="strength">Strength <b id="strengthVal">0.40</b></label>
       <input type="range" id="strength" min="0.1" max="0.6" step="0.05" value="0.4" />
     </div>
     <div class="row">
       <label for="mode">Mode</label>
       <select id="mode">
-        <option value="smooth" selected>Smooth: less shimmer, about 2.4x faster (recommended)</option>
-        <option value="robust">Max robustness: strongest for heavily cropped screenshots</option>
+        <option value="smooth" selected>Smooth (recommended)</option>
+        <option value="robust">Max robustness</option>
       </select>
     </div>
-    <p class="hint">Higher strength survives Facebook re-encoding and screenshots better, but may become faintly visible in flat areas. 0.4 tested well through a Facebook-style re-encode and phone screenshot.</p>
+    <p class="hint">Smooth has less shimmer and is about 2.4x faster. Max robustness is best for heavily cropped screenshots. Higher strength survives Facebook re-encoding and screenshots better, but may become faintly visible in flat areas. 0.4 tested well through a Facebook-style re-encode and phone screenshot.</p>
     <button id="videoBtn" disabled>Upload and watermark</button>
     <div id="uploadBar" class="bar hidden"><div></div></div>
 
@@ -62,7 +67,7 @@
   </section>
 </main>
 
-<footer>Watermark IDs are random 256-bit messages stored in <code>data/videos.json</code>. Detection compares the extracted bits against every registered video.</footer>
+<footer>Each video carries a 256-bit watermark: derived from your ID with a server-side secret, or random if no ID is given. Detection compares the extracted bits against every registered video in <code>data/videos.json</code>.</footer>
 <script src="app.js"></script>
 </body>
 </html>
