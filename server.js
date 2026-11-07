@@ -9,6 +9,7 @@ import { SealWorker } from "./lib/sealWorker.js";
 import { Registry } from "./lib/registry.js";
 import { matchAgainstRegistry, publicVideo } from "./lib/match.js";
 import { envPython } from "./lib/pythonPath.js";
+import { locateFfmpeg, addToPath } from "./lib/ffmpegPath.js";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 3000);
@@ -25,6 +26,13 @@ if (!PYTHON || !fs.existsSync(PYTHON)) {
   console.error(`Python environment not found in ${path.join(ROOT, "pyenv")}. Run "npm run setup" first.`);
   process.exit(1);
 }
+
+const ff = locateFfmpeg();
+if (ff.missing) {
+  console.error(`${ff.missing.join(" and ")} not found. Install ffmpeg (Windows: winget install Gyan.FFmpeg) or set FFMPEG_DIR.`);
+  process.exit(1);
+}
+addToPath(ff.dir); // the Python workers inherit this PATH
 
 const cpus = os.cpus().length;
 // Two workers so a long video job never blocks screenshot checks.

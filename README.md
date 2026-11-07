@@ -22,7 +22,8 @@ ffmpeg, and Python 3.10 to 3.13 (or conda on an Intel Mac).
 
 1. Install Node.js LTS from https://nodejs.org.
 2. Install Python 3.12 from https://www.python.org/downloads/windows/ and tick **"Add python.exe to PATH"**.
-3. Install ffmpeg: `winget install Gyan.FFmpeg`
+3. Install ffmpeg: `winget install Gyan.FFmpeg`. If you skip this, setup installs it for you with winget.
+   ffmpeg is found even when it is not on PATH yet; you can also point to it with `FFMPEG_DIR`.
 4. Open a **new** terminal (so PATH updates apply) in the project folder, then run `npm run setup` and `npm start`.
 
 With an NVIDIA graphics card, setup installs a CUDA build of PyTorch and checks that the GPU works,

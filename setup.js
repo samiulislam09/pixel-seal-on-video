@@ -7,6 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { envPython } from "./lib/pythonPath.js";
+import { locateFfmpeg, addToPath } from "./lib/ffmpegPath.js";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const WIN = process.platform === "win32";
@@ -41,15 +42,28 @@ const has = (cmd, args = ["-version"]) => capture(cmd, args) !== null;
 step("Checking prerequisites");
 const nodeMajor = Number(process.versions.node.split(".")[0]);
 if (nodeMajor < 18) fail(`Node.js 18 or newer is required (found ${process.versions.node}).`);
-if (!has("ffmpeg") || !has("ffprobe")) {
+let ff = locateFfmpeg();
+if (ff.missing && WIN && has("winget", ["--version"])) {
+  console.log(`Not found: ${ff.missing.join(" and ")}. Installing FFmpeg with winget...`);
+  run("winget", ["install", "--id", "Gyan.FFmpeg", "-e", "--accept-source-agreements", "--accept-package-agreements"]);
+  ff = locateFfmpeg(); // finds the new install even though this terminal's PATH is stale
+}
+if (ff.missing) {
   fail(
-    "ffmpeg and ffprobe must be installed and on your PATH.\n" +
+    `${ff.missing.join(" and ")} could not be found.\n` +
       (WIN
-        ? "  Windows: run  winget install Gyan.FFmpeg  then open a NEW terminal."
+        ? "  Install it with:  winget install Gyan.FFmpeg\n" +
+          "  Or download a build from https://www.gyan.dev/ffmpeg/builds/ , unzip it, and either add its bin\n" +
+          "  folder to PATH or set FFMPEG_DIR to that folder (for example  set FFMPEG_DIR=C:\\ffmpeg\\bin ).\n" +
+          "  If you already installed it, close and reopen your terminal (and VS Code, if you use its terminal)."
         : process.platform === "darwin"
           ? "  macOS: brew install ffmpeg"
           : "  Linux: sudo apt install ffmpeg  (or your distro's package manager)"),
   );
+}
+if (ff.dir) {
+  addToPath(ff.dir);
+  console.log(`ffmpeg found at ${ff.dir} (not on this terminal's PATH; the app finds it automatically).`);
 }
 console.log("Node.js and ffmpeg found.");
 
