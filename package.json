@@ -1,0 +1,16 @@
+{
+  "name": "video-watermark",
+  "version": "1.0.0",
+  "description": "Invisible PixelSeal watermarking for videos, with screenshot detection",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "setup": "bash setup.sh"
+  },
+  "engines": { "node": ">=18" },
+  "dependencies": {
+    "express": "^4.21.2",
+    "multer": "^1.4.5-lts.1"
+  }
+}

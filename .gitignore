@@ -1,0 +1,6 @@
+node_modules/
+pyenv/
+storage/
+data/
+ckpts/
+.idea/

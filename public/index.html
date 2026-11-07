@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Video Watermark</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<header>
+  <div class="brand">
+    <h1>Video Watermark</h1>
+    <p>Invisible PixelSeal watermarks that survive screenshots</p>
+  </div>
+  <span id="status" class="pill">Loading model…</span>
+</header>
+
+<main>
+  <section class="card">
+    <h2><span class="step">1</span> Watermark a video</h2>
+    <label class="drop" id="videoDrop">
+      <input type="file" id="videoInput" accept="video/*" hidden />
+      <strong>Drop a video here</strong> or click to choose
+      <small>MP4, MOV, MKV, WebM. Audio is kept.</small>
+    </label>
+    <div class="row">
+      <label for="strength">Strength <b id="strengthVal">0.40</b></label>
+      <input type="range" id="strength" min="0.1" max="0.6" step="0.05" value="0.4" />
+    </div>
+    <div class="row">
+      <label for="mode">Mode</label>
+      <select id="mode">
+        <option value="smooth" selected>Smooth: less shimmer, about 2.4x faster (recommended)</option>
+        <option value="robust">Max robustness: strongest for heavily cropped screenshots</option>
+      </select>
+    </div>
+    <p class="hint">Higher strength survives Facebook re-encoding and screenshots better, but may become faintly visible in flat areas. 0.4 tested well through a Facebook-style re-encode and phone screenshot.</p>
+    <button id="videoBtn" disabled>Upload and watermark</button>
+    <div id="uploadBar" class="bar hidden"><div></div></div>
+
+    <h3>Watermarked videos</h3>
+    <ul id="videos" class="videos"><li class="empty">Nothing yet.</li></ul>
+  </section>
+
+  <section class="card">
+    <h2><span class="step">2</span> Check a screenshot</h2>
+    <label class="drop" id="imgDrop">
+      <input type="file" id="imgInput" accept="image/*" hidden />
+      <strong>Drop a screenshot here</strong>, click, or paste with Ctrl/⌘ + V
+      <small>PNG, JPG, WebP</small>
+    </label>
+    <div id="previewWrap" class="preview hidden">
+      <div class="stage" id="stage">
+        <img id="preview" alt="Screenshot preview" />
+        <div id="cropBox" class="crop hidden"></div>
+        <div id="foundBox" class="found hidden"></div>
+      </div>
+      <p class="hint">Optional: drag a box around the video area to help detection. <a href="#" id="clearCrop">Clear box</a></p>
+    </div>
+    <button id="imgBtn" disabled>Check for watermark</button>
+    <div id="result"></div>
+  </section>
+</main>
+
+<footer>Watermark IDs are random 256-bit messages stored in <code>data/videos.json</code>. Detection compares the extracted bits against every registered video.</footer>
+<script src="app.js"></script>
+</body>
+</html>
