@@ -16,7 +16,7 @@ npm start       # http://localhost:3000
 ```
 
 Setup is a Node script, so it works the same on Windows, macOS and Linux. It needs Node 18+,
-ffmpeg, and Python 3.10 to 3.13 (or conda on an Intel Mac).
+ffmpeg, and Python 3.10 to 3.14 (or conda on an Intel Mac).
 
 ### Windows
 
@@ -60,15 +60,94 @@ Two workers run: one for video jobs, one for screenshot checks, so checks stay f
 
 ## API
 
+**Interactive documentation:** open `http://localhost:3000/docs` (Swagger UI) to read every endpoint, field and the webhook,
+and try requests from the browser. The OpenAPI 3.1 spec is at `/openapi.json` (import it into Postman, Insomnia or a client generator)
+and is defined in `lib/openapi.js`; update it there when the API changes.
+
+Settings go in a `.env` file next to `server.js` (copy `.env.example`) or in environment variables.
+
+### Authentication
+
+Every `/api` request needs the API key:
+
+```
+Authorization: Bearer <key>        (or  X-API-Key: <key>)
+```
+
+The key is `API_KEY` if set, otherwise the one generated in `data/api.key` on first start.
+Requests from the computer running the server (the web page) need no key. If a reverse proxy on the
+same machine forwards internet traffic to the app, make sure it sets `X-Forwarded-For`, or set `TRUST_LOCALHOST=false`.
+
+### Endpoints
+
 | Method | Path | |
 |---|---|---|
-| POST | `/api/videos` | multipart `video`, optional `watermarkId` (up to 64 characters, unique), `strength` (0.05 to 1, default 0.4) and `mode` (`smooth` or `robust`). Send text fields before the file. Returns the job; poll it. |
-| GET | `/api/videos`, `/api/videos/:id` | List or poll status and progress |
-| GET | `/api/videos/:id/download` | Watermarked MP4 |
-| DELETE | `/api/videos/:id` | Remove video and its watermark record |
+| POST | `/api/videos` | multipart `video`, optional `watermarkId` (up to 64 characters, unique), `strength` (0.05 to 1, default 0.4), `mode` (`smooth` or `robust`) and `callbackUrl`. **Send text fields before the file.** Returns the video record (202). |
+| GET | `/api/videos`, `/api/videos/:id` | List, or poll one video |
+| GET | `/api/videos/:id/download` | Watermarked MP4 from this server |
+| POST | `/api/videos/:id/upload` | Retry a failed S3 upload, or upload a video made before S3 was set up |
+| DELETE | `/api/videos/:id` | Remove the video, its watermark record and its S3 copy |
 | POST | `/api/detect` | multipart `image`, optional `crop` as `[x,y,w,h]` JSON. Returns `verdict` (`match`, `weak`, `none`), `video`, `bitAccuracy`, `log10FalsePositive` |
+| GET | `/api/status` | Model, device, queue length, S3 settings |
 
 `/api/detect` is the endpoint your chatbot can call with images received in Messenger.
+
+### Video lifecycle
+
+Read `stage` and `url` on a video record:
+
+| `stage` | Meaning |
+|---|---|
+| `queued`, `processing` | Waiting for, or being watermarked (`progress` 0 to 1) |
+| `uploading` | Copying to S3 (`upload.progress` 0 to 1) |
+| `completed` | Done. `url` is the public download link (null when S3 is off) |
+| `failed` | Watermarking failed, see `error` |
+| `upload_failed` | Watermarked, but the S3 upload failed (see `upload.error`). Fix it and call `POST /api/videos/:id/upload` |
+
+### Example
+
+```bash
+curl -H "Authorization: Bearer $KEY" \
+  -F watermarkId=CLIENT-42 \
+  -F callbackUrl=https://yourapp.example.com/hooks/watermark \
+  -F video=@clip.mp4 \
+  http://your-server:3000/api/videos
+# -> {"id":"7e9f7fbb34ae","stage":"queued","url":null,...}
+
+curl -H "Authorization: Bearer $KEY" http://your-server:3000/api/videos/7e9f7fbb34ae
+# -> {"stage":"completed","url":"https://bucket.s3.region.amazonaws.com/watermarked/clip-watermarked-7e9f7fbb34ae.mp4",...}
+```
+
+### Webhook
+
+With `callbackUrl`, the server POSTs JSON when the video reaches `completed`, `failed` or `upload_failed`:
+
+```json
+{ "event": "video.completed", "video": { "id": "...", "stage": "completed", "url": "https://...", "watermarkId": "CLIENT-42", ... } }
+```
+
+`event` is `video.completed` or `video.failed`. Failed deliveries (non-2xx or no answer within 15 s) are retried
+after 2 s, 10 s, 30 s and 2 min. The outcome is stored in the record's `webhook` field.
+Verify a delivery by checking the `X-Signature` header, which is `sha256=` + hex HMAC-SHA256 of the raw body with the API key:
+
+```js
+const expected = "sha256=" + crypto.createHmac("sha256", API_KEY).update(rawBody).digest("hex");
+```
+
+### S3 setup
+
+1. Create a bucket. Under **Permissions**, turn off *Block public access* for bucket policies (keep ACLs disabled).
+2. Add a bucket policy so anyone can download from the upload folder:
+   ```json
+   { "Version": "2012-10-17", "Statement": [{ "Effect": "Allow", "Principal": "*",
+     "Action": "s3:GetObject", "Resource": "arn:aws:s3:::YOUR-BUCKET/watermarked/*" }] }
+   ```
+3. Create an IAM user with only `s3:PutObject` and `s3:DeleteObject` on `arn:aws:s3:::YOUR-BUCKET/watermarked/*`, and an access key for it.
+4. Set `S3_BUCKET`, `S3_REGION`, `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` in `.env`, then restart. The startup log shows `S3 uploads: on`.
+
+Optional: `S3_PREFIX` (folder, default `watermarked/`), `S3_PUBLIC_BASE_URL` (links on CloudFront or your own domain),
+`S3_ENDPOINT` (S3-compatible services such as Cloudflare R2). Files are served with `Content-Disposition: attachment`, so browsers download them.
+The local copy in `storage/outputs` is kept after upload.
 
 ## Measured results
 

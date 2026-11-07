@@ -73,16 +73,16 @@ if (!run(WIN ? "npm.cmd" : "npm", ["install"], { shell: WIN })) fail("npm instal
 
 // ------------------------------------------------------------------ python env
 function findSystemPython() {
-  // Prefer 3.12; PyTorch and all dependencies have wheels for 3.10 to 3.13.
+  // Prefer 3.12; PyTorch and all dependencies have wheels for 3.10 to 3.14.
   const tries = WIN
-    ? [["py", ["-3.12"]], ["py", ["-3.13"]], ["py", ["-3.11"]], ["py", ["-3.10"]], ["python", []], ["python3", []]]
-    : [["python3.12", []], ["python3.13", []], ["python3.11", []], ["python3.10", []], ["python3", []], ["python", []]];
+    ? [["py", ["-3.12"]], ["py", ["-3.13"]], ["py", ["-3.14"]], ["py", ["-3.11"]], ["py", ["-3.10"]], ["python", []], ["python3", []]]
+    : [["python3.12", []], ["python3.13", []], ["python3.14", []], ["python3.11", []], ["python3.10", []], ["python3", []], ["python", []]];
   for (const [cmd, pre] of tries) {
     const v = capture(cmd, [...pre, "-c", "import sys; print('%d.%d' % sys.version_info[:2])"]);
     if (!v) continue;
     const [maj, min] = v.split(".").map(Number);
-    if (maj === 3 && min >= 10 && min <= 13) return { cmd, pre, version: v };
-    console.log(`  Skipping ${cmd} ${pre.join(" ")} (Python ${v}; need 3.10 to 3.13).`);
+    if (maj === 3 && min >= 10 && min <= 14) return { cmd, pre, version: v };
+    console.log(`  Skipping ${cmd} ${pre.join(" ")} (Python ${v}; need 3.10 to 3.14).`);
   }
   return null;
 }
@@ -100,7 +100,7 @@ if (py) {
   const sys = findSystemPython();
   if (!sys)
     fail(
-      "Python 3.10 to 3.13 was not found.\n" +
+      "Python 3.10 to 3.14 was not found.\n" +
         (WIN
           ? "  Install Python 3.12 from https://www.python.org/downloads/windows/ and tick\n" +
             '  "Add python.exe to PATH" during installation, then open a NEW terminal.'
@@ -111,8 +111,10 @@ if (py) {
   py = envPython(ROOT);
 }
 if (!py) fail("The Python environment was created but its interpreter could not be found.");
-const pip = (args) => run(py, ["-m", "pip", ...args]);
-pip(["install", "--upgrade", "pip"]);
+run(py, ["-m", "pip", "install", "--upgrade", "pip"]);
+// Large wheels (PyTorch CUDA is over 2 GB) can stall or drop mid-download: give up on a
+// silent connection after 60 s and resume interrupted downloads instead of starting over.
+const pip = (args) => run(py, ["-m", "pip", "--timeout", "60", "--retries", "10", ...args, ...(args[0] === "install" ? ["--resume-retries", "20"] : [])]);
 
 // ------------------------------------------------------------------ pytorch
 step("Installing PyTorch");

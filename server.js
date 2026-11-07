@@ -7,11 +7,17 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { SealWorker } from "./lib/sealWorker.js";
 import { Registry } from "./lib/registry.js";
-import { matchAgainstRegistry, publicVideo } from "./lib/match.js";
+import { matchAgainstRegistry, publicVideo, videoStage } from "./lib/match.js";
 import { envPython } from "./lib/pythonPath.js";
 import { locateFfmpeg, addToPath } from "./lib/ffmpegPath.js";
+import { s3FromEnv } from "./lib/s3.js";
+import { sendWebhook, validCallbackUrl } from "./lib/webhook.js";
+import { openapi } from "./lib/openapi.js";
+import swaggerUi from "swagger-ui-express";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
+// Settings can live in a .env file next to server.js (see .env.example). Real env vars win.
+if (fs.existsSync(path.join(ROOT, ".env")) && process.loadEnvFile) process.loadEnvFile(path.join(ROOT, ".env"));
 const PORT = Number(process.env.PORT || 3000);
 const PYTHON = process.env.SEAL_PYTHON || envPython(ROOT);
 const SCRIPT = path.join(ROOT, "worker", "seal_worker.py");
@@ -45,6 +51,23 @@ const registry = new Registry(path.join(ROOT, "data", "videos.json"));
 const SECRET_FILE = path.join(ROOT, "data", "secret.key");
 if (!fs.existsSync(SECRET_FILE)) fs.writeFileSync(SECRET_FILE, crypto.randomBytes(32).toString("hex"), { mode: 0o600 });
 const SECRET = fs.readFileSync(SECRET_FILE, "utf8").trim();
+
+// API key for /api. Set API_KEY, or one is generated into data/api.key on first start.
+// It also signs webhook bodies (X-Signature: sha256=HMAC(body, API key)).
+const API_KEY_FILE = path.join(ROOT, "data", "api.key");
+if (!process.env.API_KEY && !fs.existsSync(API_KEY_FILE)) fs.writeFileSync(API_KEY_FILE, crypto.randomBytes(24).toString("hex"), { mode: 0o600 });
+const API_KEY = (process.env.API_KEY || fs.readFileSync(API_KEY_FILE, "utf8")).trim();
+// The web page on this computer works without the key. Set TRUST_LOCALHOST=false when a reverse
+// proxy on the same machine forwards internet traffic without adding X-Forwarded-For.
+const TRUST_LOCALHOST = process.env.TRUST_LOCALHOST !== "false";
+
+let s3 = null;
+try {
+  s3 = s3FromEnv();
+} catch (e) {
+  console.error(e.message);
+  process.exit(1);
+}
 
 const toBits = (buf) => [...buf].map((b) => b.toString(2).padStart(8, "0")).join("");
 const bitsForId = (watermarkId) => toBits(crypto.createHmac("sha256", SECRET).update(watermarkId, "utf8").digest());
@@ -86,8 +109,45 @@ function startJob(v) {
         seconds: Math.round((Date.now() - started) / 1000),
       });
       console.log(`[embed] ${v.name}: ${r.frames} frames, self-check ${r.self_check_bit_acc}`);
+      return true;
     })
-    .catch((e) => registry.update(v.id, { status: "failed", error: e.message }));
+    .catch((e) => {
+      registry.update(v.id, { status: "failed", error: e.message });
+      return false;
+    })
+    .then((ok) => (ok && s3 ? uploadToS3(v) : null))
+    .then(() => notify(v));
+}
+
+// Upload the watermarked file to S3. Failure leaves the video detectable and retryable.
+async function uploadToS3(v) {
+  const key = s3.keyFor(v.output);
+  registry.update(v.id, { upload: { status: "uploading", progress: 0, key } });
+  let lastSave = 0;
+  try {
+    await s3.upload(path.join(DIRS.outputs, v.output), key, {
+      downloadName: v.output,
+      onProgress: (p) => {
+        v.upload.progress = p;
+        if (Date.now() - lastSave > 2000) (registry.save(), (lastSave = Date.now()));
+      },
+    });
+    registry.update(v.id, { upload: { status: "done", progress: 1, key, url: s3.urlFor(key), uploadedAt: new Date().toISOString() } });
+    console.log(`[s3] ${v.name} -> ${v.upload.url}`);
+  } catch (e) {
+    registry.update(v.id, { upload: { status: "failed", progress: 0, key, error: e.message } });
+    console.error(`[s3] upload of ${v.name} failed: ${e.message}`);
+  }
+}
+
+// Tell the caller the outcome, if they gave a callbackUrl.
+async function notify(v) {
+  if (!v.callbackUrl) return;
+  const stage = videoStage(v);
+  const event = stage === "completed" ? "video.completed" : "video.failed";
+  const r = await sendWebhook(v.callbackUrl, { event, video: publicVideo(v) }, API_KEY);
+  registry.update(v.id, { webhook: { event, ...r, at: new Date().toISOString() } });
+  if (!r.delivered) console.error(`[webhook] gave up on ${v.callbackUrl} for ${v.name}`);
 }
 
 // Resume jobs that a restart or crash interrupted, with the same watermark ID.
@@ -98,6 +158,14 @@ for (const v of registry.videos) if (v.status === "processing" || v.status === "
     startJob(v);
   } else {
     registry.update(v.id, { status: "failed", error: "Interrupted, and the uploaded file is missing." });
+    notify(v);
+  }
+} else if (v.status === "ready" && v.upload?.status === "uploading") {
+  if (s3) {
+    console.log(`[s3] resuming interrupted upload: ${v.name}`);
+    uploadToS3(v).then(() => notify(v));
+  } else {
+    registry.update(v.id, { upload: { ...v.upload, status: "failed", error: "Interrupted, and S3 is no longer configured." } });
   }
 }
 
@@ -131,6 +199,30 @@ const uploadImage = multer({
 const app = express();
 app.use(express.static(path.join(ROOT, "public")));
 
+// API documentation (no key needed to read it): Swagger UI at /docs, raw spec at /openapi.json.
+app.get("/openapi.json", (_req, res) => res.json(openapi));
+app.use(
+  "/docs",
+  swaggerUi.serve,
+  swaggerUi.setup(openapi, {
+    customSiteTitle: "Video Watermark API",
+    swaggerOptions: { persistAuthorization: true, displayRequestDuration: true, tryItOutEnabled: true },
+  }),
+);
+
+// Every /api route needs the key (checked before any upload is written to disk).
+const sha = (s) => crypto.createHash("sha256").update(String(s)).digest();
+const isLocal = (req) =>
+  ["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(req.socket.remoteAddress) &&
+  !req.headers["x-forwarded-for"] && !req.headers["x-real-ip"] && !req.headers.forwarded;
+app.use("/api", (req, res, next) => {
+  if (TRUST_LOCALHOST && isLocal(req)) return next();
+  const auth = req.headers.authorization || "";
+  const given = auth.startsWith("Bearer ") ? auth.slice(7).trim() : req.headers["x-api-key"];
+  if (given && crypto.timingSafeEqual(sha(given), sha(API_KEY))) return next();
+  res.status(401).json({ error: "Missing or invalid API key. Send the header  Authorization: Bearer <key>" });
+});
+
 app.get("/api/status", (_req, res) => {
   res.json({
     embedReady: embedWorker.ready,
@@ -139,6 +231,7 @@ app.get("/api/status", (_req, res) => {
     device: embedWorker.info?.device ?? null,
     deviceName: embedWorker.info?.deviceName ?? null,
     queue: embedWorker.queued,
+    s3: s3 ? { bucket: s3.bucket, region: s3.region, prefix: s3.prefix } : null,
   });
 });
 
@@ -153,9 +246,10 @@ app.get("/api/videos/:id", (req, res) => {
 app.post("/api/videos", uploadVideo.single("video"), (req, res) => {
   if (!req.file) return res.status(400).json({ error: "Upload a video file (mp4, mov, mkv, webm, avi)." });
   const wid = validateWatermarkId(req.body.watermarkId);
-  if (wid.error) {
+  const cb = validCallbackUrl(req.body.callbackUrl);
+  if (wid.error || cb.error) {
     fs.rm(req.file.path, { force: true }, () => {});
-    return res.status(400).json({ error: wid.error });
+    return res.status(400).json({ error: wid.error || cb.error });
   }
   const strength = Math.min(1, Math.max(0.05, Number(req.body.strength) || 0.4));
   const mode = req.body.mode === "robust" ? "robust" : "smooth";
@@ -166,6 +260,7 @@ app.post("/api/videos", uploadVideo.single("video"), (req, res) => {
     id,
     name: req.file.originalname,
     watermarkId: wid.id,
+    callbackUrl: cb.url,
     input: req.file.filename,
     output: `${base}-watermarked-${id}.mp4`,
     sizeIn: req.file.size,
@@ -192,12 +287,27 @@ app.get("/api/videos/:id/stream", (req, res) => {
   res.sendFile(path.join(DIRS.outputs, v.output));
 });
 
+// Retry (or do for the first time) the S3 upload of a finished video.
+app.post("/api/videos/:id/upload", (req, res) => {
+  const v = registry.get(req.params.id);
+  if (!v) return res.status(404).json({ error: "Not found" });
+  if (!s3) return res.status(400).json({ error: "S3 is not configured on this server (set S3_BUCKET and S3_REGION)." });
+  if (v.status !== "ready") return res.status(409).json({ error: "The video is not watermarked yet." });
+  if (v.upload?.status === "uploading") return res.status(409).json({ error: "Already uploading." });
+  if (!fs.existsSync(path.join(DIRS.outputs, v.output))) return res.status(410).json({ error: "The watermarked file is no longer on this server." });
+  uploadToS3(v).then(() => notify(v));
+  res.status(202).json(publicVideo(v));
+});
+
 app.delete("/api/videos/:id", (req, res) => {
   const v = registry.get(req.params.id);
   if (!v) return res.status(404).json({ error: "Not found" });
   if (v.status === "processing" || v.status === "queued") return res.status(409).json({ error: "Still processing." });
+  if (v.upload?.status === "uploading") return res.status(409).json({ error: "Still uploading to S3." });
   registry.remove(v.id);
   for (const f of [path.join(DIRS.uploads, v.input), path.join(DIRS.outputs, v.output)]) fs.rm(f, { force: true }, () => {});
+  // Also take the public copy down, so the link stops working.
+  if (s3 && v.upload?.key) s3.remove(v.upload.key).catch((e) => console.error(`[s3] could not delete ${v.upload.key}: ${e.message}`));
   res.json({ ok: true });
 });
 
@@ -219,4 +329,9 @@ app.post("/api/detect", uploadImage.single("image"), async (req, res) => {
 
 app.use((err, _req, res, _next) => res.status(400).json({ error: err.message }));
 
-app.listen(PORT, () => console.log(`Video watermark app on http://localhost:${PORT} (loading PixelSeal...)`));
+app.listen(PORT, () => {
+  console.log(`Video watermark app on http://localhost:${PORT} (loading PixelSeal...)`);
+  console.log(`API docs on http://localhost:${PORT}/docs`);
+  console.log(`API key: ${process.env.API_KEY ? "from API_KEY" : `in ${API_KEY_FILE}`}${TRUST_LOCALHOST ? " (not needed from this computer)" : ""}`);
+  console.log(s3 ? `S3 uploads: on, to s3://${s3.bucket}/${s3.prefix} (${s3.region})` : "S3 uploads: off (set S3_BUCKET and S3_REGION to enable)");
+});

@@ -4,3 +4,5 @@ storage/
 data/
 ckpts/
 .idea/
+__pycache__/
+.env

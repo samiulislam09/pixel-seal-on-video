@@ -12,6 +12,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 import traceback
 
 import numpy as np
@@ -31,6 +32,9 @@ import videoseal  # noqa: E402
 from PIL import Image  # noqa: E402
 
 MODEL_NAME = os.environ.get("SEAL_MODEL", "pixelseal")
+# On Windows, start ffmpeg/ffprobe without a console. Otherwise they inherit the console of
+# the terminal that launched the server, and fail silently at startup once that terminal is closed.
+NO_CONSOLE = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
 CHUNK = 16  # frames processed per batch
 
 
@@ -111,12 +115,18 @@ print(f"[device] using {DEVICE} ({DEVICE_NAME})", file=sys.stderr)
 
 # ---------------------------------------------------------------- video helpers
 def probe(path):
-    p = subprocess.run(
-        ["ffprobe", "-v", "error", "-show_streams", "-show_format", "-of", "json", path],
-        capture_output=True, text=True,
-    )
+    cmd = ["ffprobe", "-v", "error", "-show_streams", "-show_format", "-of", "json", path]
+    # A failure to even start ffprobe (e.g. the PC is out of memory) is transient: retry before blaming the file.
+    for attempt in range(3):
+        p = subprocess.run(cmd, capture_output=True, text=True, errors="replace", **NO_CONSOLE)
+        if p.returncode == 0 or p.stderr.strip():
+            break
+        print(f"[probe] ffprobe exited with {p.returncode:#x} and no message; retrying", file=sys.stderr)
+        time.sleep(1 + attempt)
     if p.returncode != 0:
-        raise ValueError("This file could not be read as a video.")
+        detail = p.stderr.strip().splitlines()[-1] if p.stderr.strip() else (
+            f"ffprobe could not run (exit code {p.returncode:#x}); the computer may be low on memory")
+        raise ValueError(f"This file could not be read as a video. ({detail})")
     info = json.loads(p.stdout)
     v = next((s for s in info["streams"] if s["codec_type"] == "video"), None)
     if v is None:
@@ -236,7 +246,7 @@ def cmd_embed(req):
     decoder = subprocess.Popen(
         ["ffmpeg", "-v", "error", "-i", src, "-map", "0:v:0", "-vf", decode_filter(info), *timing,
          "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:"],
-        stdout=subprocess.PIPE,
+        stdout=subprocess.PIPE, **NO_CONSOLE,
     )
     enc_cmd = ["ffmpeg", "-v", "error", "-y",
                "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{w}x{h}", "-r", info["fps_str"], "-i", "pipe:"]
@@ -244,7 +254,7 @@ def cmd_embed(req):
         enc_cmd += ["-i", src, "-map", "0:v:0", "-map", "1:a:0", "-c:a", "aac", "-b:a", "192k"]
     enc_cmd += [*ENC_COLOR, "-c:v", "libx264", "-preset", "slow", "-crf", str(crf),
                 "-movflags", "+faststart", dst]
-    encoder = subprocess.Popen(enc_cmd, stdin=subprocess.PIPE)
+    encoder = subprocess.Popen(enc_cmd, stdin=subprocess.PIPE, **NO_CONSOLE)
 
     frame_bytes = w * h * 3
     buf, done = [], 0
@@ -290,7 +300,7 @@ def verify_video(path, info, msg, n=8):
     p = subprocess.run(
         ["ffmpeg", "-v", "error", "-i", path, "-frames:v", str(n),
          "-vf", f"scale=in_color_matrix=bt709:in_range=tv:flags={SWS},format=rgb24", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:"],
-        capture_output=True, check=True,
+        capture_output=True, check=True, **NO_CONSOLE,
     )
     frames = np.frombuffer(p.stdout, np.uint8)
     k = len(frames) // (w * h * 3)
