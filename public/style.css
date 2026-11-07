@@ -23,6 +23,13 @@ h3 { margin: 24px 0 8px; font-size: 14px; color: var(--muted); text-transform: u
 .step { width: 26px; height: 26px; border-radius: 50%; background: var(--accent); color: var(--accent-ink); display: grid; place-items: center; font-size: 14px; }
 .pill { padding: 6px 12px; border-radius: 999px; background: var(--soft); color: var(--muted); font-size: 13px; }
 .pill.ok { background: var(--ok-bg); color: var(--ok); }
+.pill.warn { background: var(--warn-bg); color: var(--warn); }
+.keybar { max-width: 1180px; margin: 8px auto 0; padding: 16px 20px; background: var(--warn-bg); color: var(--warn); border-radius: 14px; display: grid; gap: 10px; }
+.keybar label strong { color: inherit; }
+.keyrow { display: flex; gap: 10px; flex-wrap: wrap; }
+.keyrow input { flex: 1; min-width: 200px; font: inherit; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text); }
+.keyerr { margin: 0; color: var(--bad); font-weight: 600; }
+@media (max-width: 1212px) { .keybar { margin-left: 16px; margin-right: 16px; } }
 .drop { display: block; border: 2px dashed var(--line); border-radius: 12px; padding: 26px 16px; text-align: center; cursor: pointer; color: var(--muted); transition: border-color .15s, background .15s; }
 .drop strong { color: var(--text); }
 .drop small { display: block; margin-top: 4px; }

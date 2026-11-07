@@ -34,6 +34,34 @@ Copy `ckpts/` to skip the 1.2 GB download, and copy `data/` (registry and secret
 
 `PORT`, `SEAL_PYTHON`, `SEAL_MODEL` (default `pixelseal`) and `SEAL_DEVICE` can be set as env vars.
 
+## Hosting from this computer (Cloudflare Tunnel)
+
+The app runs on this PC (for the GPU) and Cloudflare Tunnel makes it reachable over HTTPS, with no port forwarding.
+Watermarked videos are downloaded from S3, so that traffic does not pass through the tunnel or this PC.
+
+```powershell
+winget install Cloudflare.cloudflared                                         # once
+powershell -ExecutionPolicy Bypass -File scripts\install-autostart.ps1        # start at sign-in
+Start-ScheduledTask -TaskName "Video Watermark Host"                           # start now
+```
+
+`scripts\host.ps1` (run by that task) starts the app and the tunnel, and restarts either within about 20 s if it stops.
+Logs: `storage\host.log`, `storage\server.log`, `storage\tunnel.log`. To stop everything: end the task in Task Scheduler,
+then end `node` (`server.js`) and `cloudflared` in Task Manager. Remove auto-start with `scripts\install-autostart.ps1 -Remove`.
+
+**Address.** Without configuration you get a free quick tunnel: a random `https://….trycloudflare.com` address, written to
+`storage\public-url.txt`, that **changes whenever the tunnel restarts** (reboot, crash, network loss). Fine for testing. For a fixed address:
+
+1. Add your domain to a free Cloudflare account.
+2. Cloudflare dashboard → Zero Trust → Networks → Tunnels → *Create a tunnel* (Cloudflared) and copy its token.
+3. Under *Public hostname*, add e.g. `watermark.example.com` → service `http://localhost:3000`.
+4. Put `CLOUDFLARE_TUNNEL_TOKEN=<token>` in `.env`, end the running `cloudflared`, and the supervisor reconnects with the named tunnel.
+
+**Limits and notes.**
+- Cloudflare's free plan accepts requests up to **100 MB**, so larger videos cannot be uploaded through the tunnel.
+- Requests through the tunnel always need the API key (the localhost exemption ignores anything carrying proxy headers such as `CF-Connecting-IP`).
+- The task runs while you are signed in to Windows (no administrator rights needed). The API is offline while the PC sleeps or is off; set Windows to never sleep.
+
 ## GPU
 
 The worker picks a device at startup: NVIDIA CUDA first, then Apple Silicon (MPS), then CPU.

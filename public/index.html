@@ -12,8 +12,17 @@
     <h1>Video Watermark</h1>
     <p>Invisible PixelSeal watermarks that survive screenshots</p>
   </div>
-  <span id="status" class="pill">Loading model…</span>
+  <span id="status" class="pill">Connecting…</span>
 </header>
+
+<form id="keyForm" class="keybar hidden" autocomplete="on">
+  <label for="keyInput"><strong>API key needed.</strong> This page was opened from another computer, so enter the API key (in <code>data/api.key</code> on the server). It is remembered in this browser.</label>
+  <div class="keyrow">
+    <input type="password" id="keyInput" placeholder="API key" autocomplete="current-password" required />
+    <button type="submit">Unlock</button>
+  </div>
+  <p id="keyErr" class="keyerr hidden">That key is not valid.</p>
+</form>
 
 <main>
   <section class="card">

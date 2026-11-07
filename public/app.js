@@ -7,10 +7,45 @@ let videoFile = null;
 let imageFile = null;
 let crop = null; // [x, y, w, h] in natural image pixels
 
+// ------------------------------------------------------------------ API key (when opened through the tunnel)
+// The key is kept in a cookie so that plain links (Download) and <video> previews carry it too.
+let locked = false;
+function setLocked(on) {
+  locked = on;
+  $("#keyForm").classList.toggle("hidden", !on);
+  if (on) {
+    ready = false;
+    const el = $("#status");
+    el.textContent = "API key needed";
+    el.classList.remove("ok");
+    el.classList.add("warn");
+    updateButtons();
+  } else $("#status").classList.remove("warn");
+}
+function saveKey(key) {
+  const secure = location.protocol === "https:" ? "; Secure" : "";
+  const age = key ? 365 * 86400 : 0;
+  document.cookie = `wm_key=${encodeURIComponent(key)}; Path=/; Max-Age=${age}; SameSite=Strict${secure}`;
+}
+$("#keyForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  saveKey($("#keyInput").value.trim());
+  const ok = (await fetch("/api/status")).status !== 401;
+  $("#keyErr").classList.toggle("hidden", ok);
+  if (!ok) return saveKey("");
+  $("#keyInput").value = "";
+  setLocked(false);
+  pollStatus();
+  loadVideos();
+});
+
 // ------------------------------------------------------------------ status
 async function pollStatus() {
   try {
-    const s = await (await fetch("/api/status")).json();
+    const res = await fetch("/api/status");
+    if (res.status === 401) return setLocked(true);
+    if (locked) (setLocked(false), loadVideos());
+    const s = await res.json();
     ready = s.embedReady && s.detectReady;
     const el = $("#status");
     const dev = s.device === "cpu" ? "CPU" : `GPU: ${s.deviceName}`;
@@ -97,7 +132,9 @@ $("#videoBtn").addEventListener("click", () => {
 // ------------------------------------------------------------------ video list
 const openPreviews = new Set();
 async function loadVideos() {
-  const list = await (await fetch("/api/videos")).json();
+  const res = await fetch("/api/videos");
+  if (res.status === 401) return setLocked(true);
+  const list = await res.json();
   const ul = $("#videos");
   if (!list.length) return (ul.innerHTML = `<li class="empty">Nothing yet.</li>`);
   ul.innerHTML = list.map(renderVideo).join("");

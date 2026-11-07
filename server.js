@@ -212,13 +212,18 @@ app.use(
 
 // Every /api route needs the key (checked before any upload is written to disk).
 const sha = (s) => crypto.createHash("sha256").update(String(s)).digest();
+// Tunnels and proxies (cloudflared, ngrok, nginx) connect from localhost too, so a request only
+// counts as local when it carries none of the headers they add. Cloudflare always sets CF-Connecting-IP.
+const PROXY_HEADERS = ["x-forwarded-for", "x-real-ip", "forwarded", "cf-connecting-ip", "cf-ray", "true-client-ip", "x-forwarded-host", "x-forwarded-proto", "via"];
 const isLocal = (req) =>
-  ["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(req.socket.remoteAddress) &&
-  !req.headers["x-forwarded-for"] && !req.headers["x-real-ip"] && !req.headers.forwarded;
+  ["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(req.socket.remoteAddress) && !PROXY_HEADERS.some((h) => req.headers[h]);
 app.use("/api", (req, res, next) => {
   if (TRUST_LOCALHOST && isLocal(req)) return next();
   const auth = req.headers.authorization || "";
-  const given = auth.startsWith("Bearer ") ? auth.slice(7).trim() : req.headers["x-api-key"];
+  // The web page stores the key in the wm_key cookie, so download links and <video> work too.
+  const cookie = (req.headers.cookie || "").split(/;\s*/).find((c) => c.startsWith("wm_key="));
+  const given = auth.startsWith("Bearer ") ? auth.slice(7).trim()
+    : req.headers["x-api-key"] || (cookie && decodeURIComponent(cookie.slice(7)));
   if (given && crypto.timingSafeEqual(sha(given), sha(API_KEY))) return next();
   res.status(401).json({ error: "Missing or invalid API key. Send the header  Authorization: Bearer <key>" });
 });
