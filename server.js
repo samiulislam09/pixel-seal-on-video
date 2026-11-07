@@ -8,10 +8,11 @@ import { fileURLToPath } from "node:url";
 import { SealWorker } from "./lib/sealWorker.js";
 import { Registry } from "./lib/registry.js";
 import { matchAgainstRegistry, publicVideo } from "./lib/match.js";
+import { envPython } from "./lib/pythonPath.js";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 3000);
-const PYTHON = process.env.SEAL_PYTHON || path.join(ROOT, "pyenv", "bin", "python");
+const PYTHON = process.env.SEAL_PYTHON || envPython(ROOT);
 const SCRIPT = path.join(ROOT, "worker", "seal_worker.py");
 const DIRS = {
   uploads: path.join(ROOT, "storage", "uploads"),
@@ -20,8 +21,8 @@ const DIRS = {
 };
 for (const d of Object.values(DIRS)) fs.mkdirSync(d, { recursive: true });
 
-if (!fs.existsSync(PYTHON)) {
-  console.error(`Python environment not found at ${PYTHON}. Run "npm run setup" first.`);
+if (!PYTHON || !fs.existsSync(PYTHON)) {
+  console.error(`Python environment not found in ${path.join(ROOT, "pyenv")}. Run "npm run setup" first.`);
   process.exit(1);
 }
 

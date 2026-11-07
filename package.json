@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "start": "node server.js",
-    "setup": "bash setup.sh"
+    "setup": "node setup.js"
   },
   "engines": { "node": ">=18" },
   "dependencies": {

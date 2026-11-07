@@ -11,11 +11,26 @@ screenshots that clients take of your Facebook videos and send in Messenger.
 ## Run
 
 ```bash
-npm run setup   # once: Node deps, local Python env (./pyenv), PixelSeal weights (1.2 GB in ./ckpts)
+npm run setup   # once: Node packages, Python env in ./pyenv, PixelSeal weights (1.2 GB in ./ckpts)
 npm start       # http://localhost:3000
 ```
 
-Needs Node 18+, ffmpeg and conda (or python3 with pip-installable PyTorch).
+Setup is a Node script, so it works the same on Windows, macOS and Linux. It needs Node 18+,
+ffmpeg, and Python 3.10 to 3.13 (or conda on an Intel Mac).
+
+### Windows
+
+1. Install Node.js LTS from https://nodejs.org.
+2. Install Python 3.12 from https://www.python.org/downloads/windows/ and tick **"Add python.exe to PATH"**.
+3. Install ffmpeg: `winget install Gyan.FFmpeg`
+4. Open a **new** terminal (so PATH updates apply) in the project folder, then run `npm run setup` and `npm start`.
+
+With an NVIDIA graphics card, setup installs a CUDA build of PyTorch and checks that the GPU works,
+falling back to CPU otherwise. Keep the NVIDIA driver up to date.
+
+**Moving from another computer:** do not copy `pyenv/` or `node_modules/`, they only work on the machine that built them.
+Copy `ckpts/` to skip the 1.2 GB download, and copy `data/` (registry and secret key) so existing videos are still recognised.
+
 `PORT`, `SEAL_PYTHON`, `SEAL_MODEL` (default `pixelseal`) and `SEAL_DEVICE` can be set as env vars.
 
 ## GPU
