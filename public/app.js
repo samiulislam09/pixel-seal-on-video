@@ -165,8 +165,11 @@ function renderVideo(v) {
 
   const bar = v.status === "processing" || v.status === "queued" ? `<div class="bar"><div style="width:${v.progress * 100}%"></div></div>` : "";
   const actions =
-    v.status === "ready"
-      ? `<a class="btn" href="/api/videos/${v.id}/download">Download</a>
+    v.status === "ready" && v.downloadedAt
+      ? `<span class="meta">Downloaded · file deleted from this server</span>
+         <button class="ghost" onclick="delVideo('${v.id}')">Delete record</button>`
+      : v.status === "ready"
+      ? `<a class="btn" onclick="setTimeout(loadVideos, 3000)" href="/api/videos/${v.id}/download">Download</a>
          ${v.url ? `<button class="ghost" onclick="copyLink('${v.id}', this)">Copy link</button>` : ""}
          ${v.stage === "upload_failed" ? `<button class="ghost" onclick="retryUpload('${v.id}')">Retry upload</button>` : ""}
          <button class="ghost" onclick="togglePreview('${v.id}')">${openPreviews.has(v.id) ? "Hide" : "Preview"}</button>
@@ -174,7 +177,7 @@ function renderVideo(v) {
       : v.status === "failed"
         ? `<button class="ghost" onclick="delVideo('${v.id}')">Delete</button>`
         : "";
-  const preview = openPreviews.has(v.id) ? `<video src="/api/videos/${v.id}/stream" controls playsinline></video>` : "";
+  const preview = openPreviews.has(v.id) && !v.downloadedAt ? `<video src="/api/videos/${v.id}/stream" controls playsinline></video>` : "";
   return `<li class="vid" id="v-${v.id}">
     <div class="top"><span class="name" title="${esc(v.name)}">${esc(v.name)}</span>${status}</div>
     ${v.watermarkId ? `<div class="meta">ID <span class="wid">${esc(v.watermarkId)}</span></div>` : ""}

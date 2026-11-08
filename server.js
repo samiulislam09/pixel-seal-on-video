@@ -115,6 +115,11 @@ function startJob(v) {
       registry.update(v.id, { status: "failed", error: e.message });
       return false;
     })
+    .then((ok) => {
+      // The original upload is not needed once the watermarked copy exists (or the job failed).
+      fs.rm(path.join(DIRS.uploads, v.input), { force: true }, () => {});
+      return ok;
+    })
     .then((ok) => (ok && s3 ? uploadToS3(v) : null))
     .then(() => notify(v));
 }
@@ -280,15 +285,25 @@ app.post("/api/videos", uploadVideo.single("video"), (req, res) => {
   startJob(v);
 });
 
+// The watermarked file is deleted from this server once it has been downloaded in full.
+// The record (with the watermark bits) stays, so screenshots of the video are still recognised.
 app.get("/api/videos/:id/download", (req, res) => {
   const v = registry.get(req.params.id);
   if (!v || v.status !== "ready") return res.status(404).json({ error: "Not ready" });
-  res.download(path.join(DIRS.outputs, v.output), v.output);
+  if (v.downloadedAt) return res.status(410).json({ error: "Already downloaded; the file was deleted from this server." });
+  const file = path.join(DIRS.outputs, v.output);
+  res.download(file, v.output, (err) => {
+    // Keep the file after an aborted download, a partial (Range) request, or while S3 still needs it.
+    if (err || req.headers.range || v.upload?.status === "uploading") return;
+    fs.rm(file, { force: true }, () => {});
+    registry.update(v.id, { downloadedAt: new Date().toISOString() });
+    console.log(`[download] ${v.name}: sent, file deleted`);
+  });
 });
 
 app.get("/api/videos/:id/stream", (req, res) => {
   const v = registry.get(req.params.id);
-  if (!v || v.status !== "ready") return res.status(404).end();
+  if (!v || v.status !== "ready" || v.downloadedAt) return res.status(404).end();
   res.sendFile(path.join(DIRS.outputs, v.output));
 });
 
@@ -329,6 +344,8 @@ app.post("/api/detect", uploadImage.single("image"), async (req, res) => {
     res.json({ ...result, image: { width: r.width, height: r.height }, ms: Date.now() - t0 });
   } catch (e) {
     res.status(500).json({ error: e.message });
+  } finally {
+    fs.rm(req.file.path, { force: true }, () => {});
   }
 });
 
