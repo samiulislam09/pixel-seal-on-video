@@ -56,7 +56,7 @@ function Start-Tunnel {
   Remove-Item $tlog -ErrorAction SilentlyContinue
   if ($Token) {
     Log 'Starting named Cloudflare tunnel'
-    Start-Process -FilePath $Cloudflared -ArgumentList 'tunnel', '--no-autoupdate', '--logfile', "`"$tlog`"", 'run', '--token', $Token -WindowStyle Hidden
+    Start-Process -FilePath $Cloudflared -ArgumentList 'tunnel', '--no-autoupdate', '--logfile', "`"$tlog`"", '--url', "http://localhost:$Port", 'run', '--token', $Token -WindowStyle Hidden
   } else {
     Log 'Starting quick Cloudflare tunnel (random address)'
     Remove-Item $UrlFile -ErrorAction SilentlyContinue
