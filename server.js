@@ -10,7 +10,6 @@ import { Registry } from "./lib/registry.js";
 import { matchAgainstRegistry, publicVideo, videoStage } from "./lib/match.js";
 import { envPython } from "./lib/pythonPath.js";
 import { locateFfmpeg, addToPath } from "./lib/ffmpegPath.js";
-import { s3FromEnv } from "./lib/s3.js";
 import { sendWebhook, validCallbackUrl } from "./lib/webhook.js";
 import { openapi } from "./lib/openapi.js";
 import swaggerUi from "swagger-ui-express";
@@ -61,14 +60,6 @@ const API_KEY = (process.env.API_KEY || fs.readFileSync(API_KEY_FILE, "utf8")).t
 // proxy on the same machine forwards internet traffic without adding X-Forwarded-For.
 const TRUST_LOCALHOST = process.env.TRUST_LOCALHOST !== "false";
 
-let s3 = null;
-try {
-  s3 = s3FromEnv();
-} catch (e) {
-  console.error(e.message);
-  process.exit(1);
-}
-
 const toBits = (buf) => [...buf].map((b) => b.toString(2).padStart(8, "0")).join("");
 const bitsForId = (watermarkId) => toBits(crypto.createHmac("sha256", SECRET).update(watermarkId, "utf8").digest());
 
@@ -109,40 +100,15 @@ function startJob(v) {
         seconds: Math.round((Date.now() - started) / 1000),
       });
       console.log(`[embed] ${v.name}: ${r.frames} frames, self-check ${r.self_check_bit_acc}`);
-      return true;
     })
     .catch((e) => {
       registry.update(v.id, { status: "failed", error: e.message });
-      return false;
     })
-    .then((ok) => {
+    .then(() => {
       // The original upload is not needed once the watermarked copy exists (or the job failed).
       fs.rm(path.join(DIRS.uploads, v.input), { force: true }, () => {});
-      return ok;
     })
-    .then((ok) => (ok && s3 ? uploadToS3(v) : null))
     .then(() => notify(v));
-}
-
-// Upload the watermarked file to S3. Failure leaves the video detectable and retryable.
-async function uploadToS3(v) {
-  const key = s3.keyFor(v.output);
-  registry.update(v.id, { upload: { status: "uploading", progress: 0, key } });
-  let lastSave = 0;
-  try {
-    await s3.upload(path.join(DIRS.outputs, v.output), key, {
-      downloadName: v.output,
-      onProgress: (p) => {
-        v.upload.progress = p;
-        if (Date.now() - lastSave > 2000) (registry.save(), (lastSave = Date.now()));
-      },
-    });
-    registry.update(v.id, { upload: { status: "done", progress: 1, key, url: s3.urlFor(key), uploadedAt: new Date().toISOString() } });
-    console.log(`[s3] ${v.name} -> ${v.upload.url}`);
-  } catch (e) {
-    registry.update(v.id, { upload: { status: "failed", progress: 0, key, error: e.message } });
-    console.error(`[s3] upload of ${v.name} failed: ${e.message}`);
-  }
 }
 
 // Tell the caller the outcome, if they gave a callbackUrl.
@@ -164,13 +130,6 @@ for (const v of registry.videos) if (v.status === "processing" || v.status === "
   } else {
     registry.update(v.id, { status: "failed", error: "Interrupted, and the uploaded file is missing." });
     notify(v);
-  }
-} else if (v.status === "ready" && v.upload?.status === "uploading") {
-  if (s3) {
-    console.log(`[s3] resuming interrupted upload: ${v.name}`);
-    uploadToS3(v).then(() => notify(v));
-  } else {
-    registry.update(v.id, { upload: { ...v.upload, status: "failed", error: "Interrupted, and S3 is no longer configured." } });
   }
 }
 
@@ -241,7 +200,6 @@ app.get("/api/status", (_req, res) => {
     device: embedWorker.info?.device ?? null,
     deviceName: embedWorker.info?.deviceName ?? null,
     queue: embedWorker.queued,
-    s3: s3 ? { bucket: s3.bucket, region: s3.region, prefix: s3.prefix } : null,
   });
 });
 
@@ -293,8 +251,8 @@ app.get("/api/videos/:id/download", (req, res) => {
   if (v.downloadedAt) return res.status(410).json({ error: "Already downloaded; the file was deleted from this server." });
   const file = path.join(DIRS.outputs, v.output);
   res.download(file, v.output, (err) => {
-    // Keep the file after an aborted download, a partial (Range) request, or while S3 still needs it.
-    if (err || req.headers.range || v.upload?.status === "uploading") return;
+    // Keep the file after an aborted download or a partial (Range) request.
+    if (err || req.headers.range) return;
     fs.rm(file, { force: true }, () => {});
     registry.update(v.id, { downloadedAt: new Date().toISOString() });
     console.log(`[download] ${v.name}: sent, file deleted`);
@@ -307,27 +265,12 @@ app.get("/api/videos/:id/stream", (req, res) => {
   res.sendFile(path.join(DIRS.outputs, v.output));
 });
 
-// Retry (or do for the first time) the S3 upload of a finished video.
-app.post("/api/videos/:id/upload", (req, res) => {
-  const v = registry.get(req.params.id);
-  if (!v) return res.status(404).json({ error: "Not found" });
-  if (!s3) return res.status(400).json({ error: "S3 is not configured on this server (set S3_BUCKET and S3_REGION)." });
-  if (v.status !== "ready") return res.status(409).json({ error: "The video is not watermarked yet." });
-  if (v.upload?.status === "uploading") return res.status(409).json({ error: "Already uploading." });
-  if (!fs.existsSync(path.join(DIRS.outputs, v.output))) return res.status(410).json({ error: "The watermarked file is no longer on this server." });
-  uploadToS3(v).then(() => notify(v));
-  res.status(202).json(publicVideo(v));
-});
-
 app.delete("/api/videos/:id", (req, res) => {
   const v = registry.get(req.params.id);
   if (!v) return res.status(404).json({ error: "Not found" });
   if (v.status === "processing" || v.status === "queued") return res.status(409).json({ error: "Still processing." });
-  if (v.upload?.status === "uploading") return res.status(409).json({ error: "Still uploading to S3." });
   registry.remove(v.id);
   for (const f of [path.join(DIRS.uploads, v.input), path.join(DIRS.outputs, v.output)]) fs.rm(f, { force: true }, () => {});
-  // Also take the public copy down, so the link stops working.
-  if (s3 && v.upload?.key) s3.remove(v.upload.key).catch((e) => console.error(`[s3] could not delete ${v.upload.key}: ${e.message}`));
   res.json({ ok: true });
 });
 
@@ -355,5 +298,4 @@ app.listen(PORT, () => {
   console.log(`Video watermark app on http://localhost:${PORT} (loading PixelSeal...)`);
   console.log(`API docs on http://localhost:${PORT}/docs`);
   console.log(`API key: ${process.env.API_KEY ? "from API_KEY" : `in ${API_KEY_FILE}`}${TRUST_LOCALHOST ? " (not needed from this computer)" : ""}`);
-  console.log(s3 ? `S3 uploads: on, to s3://${s3.bucket}/${s3.prefix} (${s3.region})` : "S3 uploads: off (set S3_BUCKET and S3_REGION to enable)");
 });

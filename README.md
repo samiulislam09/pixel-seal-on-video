@@ -37,7 +37,7 @@ Copy `ckpts/` to skip the 1.2 GB download, and copy `data/` (registry and secret
 ## Hosting from this computer (Cloudflare Tunnel)
 
 The app runs on this PC (for the GPU) and Cloudflare Tunnel makes it reachable over HTTPS, with no port forwarding.
-Watermarked videos are downloaded from S3, so that traffic does not pass through the tunnel or this PC.
+Watermarked videos are downloaded from this PC through the tunnel.
 
 ```powershell
 winget install Cloudflare.cloudflared                                         # once
@@ -110,27 +110,24 @@ same machine forwards internet traffic to the app, make sure it sets `X-Forwarde
 
 | Method | Path | |
 |---|---|---|
-| POST | `/api/videos` | multipart `video`, optional `watermarkId` (up to 64 characters, unique), `strength` (0.05 to 1, default 0.4), `mode` (`smooth` or `robust`) and `callbackUrl`. **Send text fields before the file.** Returns the video record (202). |
+| POST | `/api/videos` | multipart `video`, optional `watermarkId` (up to 64 characters, unique), `strength` (0.05 to 1, default 0.4), `mode` (`smooth` or `robust`) and `callbackUrl`. Returns the video record (202). |
 | GET | `/api/videos`, `/api/videos/:id` | List, or poll one video |
-| GET | `/api/videos/:id/download` | Watermarked MP4 from this server |
-| POST | `/api/videos/:id/upload` | Retry a failed S3 upload, or upload a video made before S3 was set up |
-| DELETE | `/api/videos/:id` | Remove the video, its watermark record and its S3 copy |
+| GET | `/api/videos/:id/download` | Watermarked MP4 from this server. One download only: the file is then deleted (`downloadedAt` is set, later calls get 410) |
+| DELETE | `/api/videos/:id` | Remove the video and its watermark record |
 | POST | `/api/detect` | multipart `image`, optional `crop` as `[x,y,w,h]` JSON. Returns `verdict` (`match`, `weak`, `none`), `video`, `bitAccuracy`, `log10FalsePositive` |
-| GET | `/api/status` | Model, device, queue length, S3 settings |
+| GET | `/api/status` | Model, device, queue length |
 
 `/api/detect` is the endpoint your chatbot can call with images received in Messenger.
 
 ### Video lifecycle
 
-Read `stage` and `url` on a video record:
+Read `stage` on a video record:
 
 | `stage` | Meaning |
 |---|---|
 | `queued`, `processing` | Waiting for, or being watermarked (`progress` 0 to 1) |
-| `uploading` | Copying to S3 (`upload.progress` 0 to 1) |
-| `completed` | Done. `url` is the public download link (null when S3 is off) |
+| `completed` | Done. Download it once from `/api/videos/:id/download` |
 | `failed` | Watermarking failed, see `error` |
-| `upload_failed` | Watermarked, but the S3 upload failed (see `upload.error`). Fix it and call `POST /api/videos/:id/upload` |
 
 ### Example
 
@@ -140,18 +137,21 @@ curl -H "Authorization: Bearer $KEY" \
   -F callbackUrl=https://yourapp.example.com/hooks/watermark \
   -F video=@clip.mp4 \
   http://your-server:3000/api/videos
-# -> {"id":"7e9f7fbb34ae","stage":"queued","url":null,...}
+# -> {"id":"7e9f7fbb34ae","stage":"queued",...}
 
 curl -H "Authorization: Bearer $KEY" http://your-server:3000/api/videos/7e9f7fbb34ae
-# -> {"stage":"completed","url":"https://bucket.s3.region.amazonaws.com/watermarked/clip-watermarked-7e9f7fbb34ae.mp4",...}
+# -> {"stage":"completed",...}
+
+curl -H "Authorization: Bearer $KEY" -OJ http://your-server:3000/api/videos/7e9f7fbb34ae/download
+# saves clip-watermarked-7e9f7fbb34ae.mp4; the server then deletes its copy
 ```
 
 ### Webhook
 
-With `callbackUrl`, the server POSTs JSON when the video reaches `completed`, `failed` or `upload_failed`:
+With `callbackUrl`, the server POSTs JSON when the video reaches `completed` or `failed`:
 
 ```json
-{ "event": "video.completed", "video": { "id": "...", "stage": "completed", "url": "https://...", "watermarkId": "CLIENT-42", ... } }
+{ "event": "video.completed", "video": { "id": "...", "stage": "completed", "watermarkId": "CLIENT-42", ... } }
 ```
 
 `event` is `video.completed` or `video.failed`. Failed deliveries (non-2xx or no answer within 15 s) are retried
@@ -161,21 +161,6 @@ Verify a delivery by checking the `X-Signature` header, which is `sha256=` + hex
 ```js
 const expected = "sha256=" + crypto.createHmac("sha256", API_KEY).update(rawBody).digest("hex");
 ```
-
-### S3 setup
-
-1. Create a bucket. Under **Permissions**, turn off *Block public access* for bucket policies (keep ACLs disabled).
-2. Add a bucket policy so anyone can download from the upload folder:
-   ```json
-   { "Version": "2012-10-17", "Statement": [{ "Effect": "Allow", "Principal": "*",
-     "Action": "s3:GetObject", "Resource": "arn:aws:s3:::YOUR-BUCKET/watermarked/*" }] }
-   ```
-3. Create an IAM user with only `s3:PutObject` and `s3:DeleteObject` on `arn:aws:s3:::YOUR-BUCKET/watermarked/*`, and an access key for it.
-4. Set `S3_BUCKET`, `S3_REGION`, `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` in `.env`, then restart. The startup log shows `S3 uploads: on`.
-
-Optional: `S3_PREFIX` (folder, default `watermarked/`), `S3_PUBLIC_BASE_URL` (links on CloudFront or your own domain),
-`S3_ENDPOINT` (S3-compatible services such as Cloudflare R2). Files are served with `Content-Disposition: attachment`, so browsers download them.
-The local copy in `storage/outputs` is kept after upload.
 
 ## Measured results
 

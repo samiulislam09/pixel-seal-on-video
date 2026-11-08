@@ -138,7 +138,7 @@ async function loadVideos() {
   const ul = $("#videos");
   if (!list.length) return (ul.innerHTML = `<li class="empty">Nothing yet.</li>`);
   ul.innerHTML = list.map(renderVideo).join("");
-  const busy = list.some((v) => ["queued", "processing", "uploading"].includes(v.stage));
+  const busy = list.some((v) => ["queued", "processing"].includes(v.stage));
   clearTimeout(loadVideos.t);
   if (busy) loadVideos.t = setTimeout(loadVideos, 1500);
 }
@@ -148,13 +148,8 @@ function renderVideo(v) {
   if (v.status === "ready") {
     const sc = v.selfCheck != null ? `${(v.selfCheck * 100).toFixed(1)}% self-check` : "ready";
     status = `<span class="tag ${v.selfCheck >= 0.95 ? "ok" : "bad"}">${sc}</span>`;
-    if (v.stage === "uploading") status += `<span class="tag">uploading ${Math.round((v.upload.progress || 0) * 100)}%</span>`;
-    else if (v.stage === "upload_failed") status += `<span class="tag bad" title="${esc(v.upload.error)}">upload failed</span>`;
   } else if (v.status === "failed") status = `<span class="tag bad">failed</span>`;
   else status = `<span class="tag">${v.status === "queued" ? "queued" : `${Math.round(v.progress * 100)}%`}</span>`;
-  const link = v.url
-    ? `<div class="meta">Public link <a href="${esc(v.url)}" target="_blank" rel="noopener">${esc(v.url)}</a></div>`
-    : v.stage === "upload_failed" ? `<div class="meta">${esc(v.upload.error)}</div>` : "";
 
   const meta =
     v.status === "ready"
@@ -170,10 +165,8 @@ function renderVideo(v) {
          <button class="ghost" onclick="delVideo('${v.id}')">Delete record</button>`
       : v.status === "ready"
       ? `<a class="btn" onclick="setTimeout(loadVideos, 3000)" href="/api/videos/${v.id}/download">Download</a>
-         ${v.url ? `<button class="ghost" onclick="copyLink('${v.id}', this)">Copy link</button>` : ""}
-         ${v.stage === "upload_failed" ? `<button class="ghost" onclick="retryUpload('${v.id}')">Retry upload</button>` : ""}
          <button class="ghost" onclick="togglePreview('${v.id}')">${openPreviews.has(v.id) ? "Hide" : "Preview"}</button>
-         ${v.stage === "uploading" ? "" : `<button class="ghost" onclick="delVideo('${v.id}')">Delete</button>`}`
+         <button class="ghost" onclick="delVideo('${v.id}')">Delete</button>`
       : v.status === "failed"
         ? `<button class="ghost" onclick="delVideo('${v.id}')">Delete</button>`
         : "";
@@ -181,24 +174,14 @@ function renderVideo(v) {
   return `<li class="vid" id="v-${v.id}">
     <div class="top"><span class="name" title="${esc(v.name)}">${esc(v.name)}</span>${status}</div>
     ${v.watermarkId ? `<div class="meta">ID <span class="wid">${esc(v.watermarkId)}</span></div>` : ""}
-    <div class="meta">${meta}</div>${link}${bar}
+    <div class="meta">${meta}</div>${bar}
     ${actions ? `<div class="actions">${actions}</div>` : ""}${preview}
   </li>`;
 }
 
 window.togglePreview = (id) => (openPreviews.has(id) ? openPreviews.delete(id) : openPreviews.add(id), loadVideos());
-window.copyLink = async (id, btn) => {
-  const v = (await (await fetch(`/api/videos/${id}`)).json());
-  await navigator.clipboard.writeText(v.url);
-  btn.textContent = "Copied";
-};
-window.retryUpload = async (id) => {
-  const res = await fetch(`/api/videos/${id}/upload`, { method: "POST" });
-  if (!res.ok) alert((await res.json()).error || "Retry failed");
-  loadVideos();
-};
 window.delVideo = async (id) => {
-  if (!confirm("Delete this video, its watermark record and its public S3 copy? Screenshots of it will no longer be recognised.")) return;
+  if (!confirm("Delete this video and its watermark record? Screenshots of it will no longer be recognised.")) return;
   await fetch(`/api/videos/${id}`, { method: "DELETE" });
   loadVideos();
 };
