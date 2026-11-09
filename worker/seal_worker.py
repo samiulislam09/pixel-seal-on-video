@@ -29,7 +29,7 @@ sys.stdout = sys.stderr
 torch.set_num_threads(int(os.environ.get("SEAL_THREADS", os.cpu_count() or 4)))
 
 import videoseal  # noqa: E402
-from PIL import Image  # noqa: E402
+from PIL import Image, ImageOps  # noqa: E402
 
 MODEL_NAME = os.environ.get("SEAL_MODEL", "pixelseal")
 # On Windows, start ffmpeg/ffprobe without a console. Otherwise they inherit the console of
@@ -387,7 +387,63 @@ def cmd_detect(req):
     return {"width": int(arr.shape[1]), "height": int(arr.shape[0]), "candidates": out}
 
 
-HANDLERS = {"embed": cmd_embed, "detect": cmd_detect, "ping": lambda r: {"model": MODEL_NAME, "nbits": NBITS, "device": DEVICE}}
+# ---------------------------------------------------------------- still images (product photos)
+MAX_IMAGE_PIXELS = 50_000_000  # about 8660x5770; larger photos are refused rather than risking memory
+
+
+def open_image(path):
+    try:
+        img = Image.open(path)
+        img.load()
+    except Image.DecompressionBombError:
+        raise ValueError("This image is too large to watermark.")
+    except Exception:
+        raise ValueError("This file could not be read as an image.")
+    return img
+
+
+def cmd_embed_image(req):
+    """Watermark one still image. PNG output stays lossless; anything else is saved as JPEG quality 95, 4:4:4."""
+    src, dst = req["input"], req["output"]
+    msg = bits_tensor(req["bits"])
+    model.blender.scaling_w = float(req.get("strength", 0.4))
+    model.embedder.unet.time_pooling = False  # a single frame: no pooling across frames
+
+    img = open_image(src)
+    icc = img.info.get("icc_profile")
+    img = ImageOps.exif_transpose(img)  # phone photos store rotation in EXIF; bake it in
+    if img.width * img.height > MAX_IMAGE_PIXELS:
+        raise ValueError(f"This image is too large to watermark (max {MAX_IMAGE_PIXELS // 1_000_000} megapixels).")
+    if img.width < 32 or img.height < 32:
+        raise ValueError("This image is too small to watermark (min 32x32 pixels).")
+
+    as_png = dst.lower().endswith(".png")
+    has_alpha = img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info)
+    alpha = img.convert("RGBA").getchannel("A") if (has_alpha and as_png) else None
+    rgb = np.asarray(img.convert("RGB"))
+
+    x = to_tensor(rgb[None])
+    with torch.no_grad():
+        out = to_u8(model.embed(x, msgs=msg, is_video=False)["imgs_w"])[0]
+    res = Image.fromarray(out, "RGB")
+    if alpha is not None:
+        res.putalpha(alpha)
+    extra = {"icc_profile": icc} if icc else {}
+    if as_png:
+        res.save(dst, "PNG", optimize=True, **extra)
+    else:
+        res.save(dst, "JPEG", quality=95, subsampling=0, optimize=True, **extra)
+
+    # Self-check: read the saved file back, as a viewer would, and decode the message.
+    back = np.asarray(Image.open(dst).convert("RGB"))
+    with torch.no_grad():
+        preds = model.detect(to_tensor(back[None]), is_video=False)["preds"][0, 1:].cpu()
+    acc = ((preds > 0).float() == msg[0]).float().mean().item()
+    return {"width": int(rgb.shape[1]), "height": int(rgb.shape[0]), "format": "png" if as_png else "jpeg",
+            "self_check_bit_acc": round(acc, 4)}
+
+
+HANDLERS = {"embed": cmd_embed, "embed_image": cmd_embed_image, "detect": cmd_detect, "ping": lambda r: {"model": MODEL_NAME, "nbits": NBITS, "device": DEVICE}}
 
 send({"type": "ready", "model": MODEL_NAME, "nbits": NBITS, "device": DEVICE, "deviceName": DEVICE_NAME})
 for line in sys.stdin:
@@ -401,4 +457,5 @@ for line in sys.stdin:
         send({"id": req.get("id"), "type": "result", **result})
     except Exception as e:  # report and keep serving
         traceback.print_exc()
-        send({"id": req.get("id"), "type": "error", "error": str(e)})
+        # ValueError means the input itself is unusable (the caller's fault), anything else is ours.
+        send({"id": req.get("id"), "type": "error", "error": str(e), "bad_input": isinstance(e, ValueError)})
