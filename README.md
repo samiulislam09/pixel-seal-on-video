@@ -130,6 +130,8 @@ same machine forwards internet traffic to the app, make sure it sets `X-Forwarde
 | POST | `/api/detect` | multipart `image`, optional `crop` as `[x,y,w,h]` JSON, optional `scope` (for example `s22`: only compare with videos and photos whose watermark ID starts with `s22-`; anything not like `s22` or `w1a2b3c4d` gives 400). Returns `verdict` (`match`, `weak`, `none`), `video` (the matched video or photo; its `kind` is `video` or `image`), `bitAccuracy`, `log10FalsePositive` |
 | GET | `/api/status` | Model, device, queue length |
 
+**Video file retention.** Watermarked video files are deleted `VIDEO_RETENTION_DAYS` (default 30, `0` = never) after they finish, checked every 6 hours. The record and its watermark stay, so screenshots are still recognised; downloads then answer 410 `code: file_expired` and the record shows `fileDeletedAt`. Images are kept.
+
 Pass routes answer 401 `{ error, reason }` for a bad or expired pass and 409 when the video is in the wrong state. Browsers may call them only from origins listed in `CORS_ORIGINS`.
 
 `/api/detect` is the endpoint your chatbot can call with images received in Messenger.

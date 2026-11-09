@@ -17,6 +17,7 @@ import { verifyPass } from "./lib/passes.js";
 import { chunkCount, receivedChunks, missingChunks, assemble, createClaims, CHUNK_BYTES } from "./lib/chunks.js";
 import { asyncRoute, isPassRoute, retryDecision } from "./lib/http.js";
 import { IMAGE_EXT, isImage, isVideo, outputExt, parseLinkField, clampStrength } from "./lib/images.js";
+import { expiredMessage, retentionDays, videosToExpire } from "./lib/retention.js";
 import swaggerUi from "swagger-ui-express";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -104,6 +105,7 @@ function startJob(v) {
         selfCheck: r.self_check_bit_acc,
         sizeOut,
         seconds: Math.round((Date.now() - started) / 1000),
+        completedAt: new Date().toISOString(),
       });
       console.log(`[embed] ${v.name}: ${r.frames} frames, self-check ${r.self_check_bit_acc}`);
       // The original is not needed once the watermarked copy exists.
@@ -154,6 +156,21 @@ function cleanupFailedOriginals() {
 }
 cleanupFailedOriginals();
 setInterval(cleanupFailedOriginals, 3600_000).unref();
+
+// Watermarked video files are deleted VIDEO_RETENTION_DAYS after they were made (default 30, 0 = never).
+// The record stays, so screenshots of the video are still recognised; only re-downloading stops.
+const RETENTION_DAYS = retentionDays(process.env.VIDEO_RETENTION_DAYS);
+function expireOldVideos() {
+  if (!RETENTION_DAYS) return;
+  const expired = videosToExpire(registry.videos, Date.now(), RETENTION_DAYS);
+  for (const v of expired) {
+    fs.rm(path.join(DIRS.outputs, v.output), { force: true }, () => {});
+    registry.update(v.id, { fileDeletedAt: new Date().toISOString(), fileRetentionDays: RETENTION_DAYS });
+  }
+  if (expired.length) console.log(`[retention] removed ${expired.length} watermarked video file(s) older than ${RETENTION_DAYS} days`);
+}
+expireOldVideos();
+setInterval(expireOldVideos, 6 * 3600_000).unref();
 
 // Stop the Python workers with the server, so none keep running orphaned.
 for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) {
@@ -232,6 +249,8 @@ app.get("/api/status", (_req, res) => {
     device: embedWorker.info?.device ?? null,
     deviceName: embedWorker.info?.deviceName ?? null,
     queue: embedWorker.queued,
+    // Days a watermarked video file is kept (VIDEO_RETENTION_DAYS); 0 = kept forever.
+    videoRetentionDays: RETENTION_DAYS,
   });
 });
 
@@ -354,6 +373,13 @@ app.get("/api/videos/:id/download", (req, res) => {
 
 // The record says ready but the file may be gone: answer 404, never the raw filesystem error.
 function sendOutput(res, v, attachment) {
+  if (v.fileDeletedAt) {
+    return res.status(410).json({
+      // The days in force when this file was removed; older records fall back to the current setting.
+      error: expiredMessage(v.fileRetentionDays ?? RETENTION_DAYS),
+      code: "file_expired",
+    });
+  }
   const file = path.join(DIRS.outputs, v.output);
   if (!fs.existsSync(file)) return res.status(404).json({ error: "The watermarked file is missing on this server." });
   if (attachment) return res.download(file, v.output);
