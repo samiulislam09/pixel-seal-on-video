@@ -5,4 +5,4 @@ data/
 ckpts/
 .idea/
 __pycache__/
-.env
+config.bat
