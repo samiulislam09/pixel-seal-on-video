@@ -74,11 +74,18 @@ function wireDrop(zone, input, onFile) {
   });
 }
 
+const PHOTO_EXT = /\.(png|jpe?g|webp|bmp)$/i;
+const isPhoto = (f) => PHOTO_EXT.test(f.name);
 wireDrop($("#videoDrop"), $("#videoInput"), (f) => {
   videoFile = f;
+  const photo = isPhoto(f);
   $("#videoDrop").classList.add("has");
   $("#videoDrop strong").textContent = f.name;
-  $("#videoDrop small").textContent = `${mb(f.size)} · click to change`;
+  $("#videoDrop small").textContent = `${photo ? "Photo" : "Video"} · ${mb(f.size)} · click to change`;
+  // Mode only applies to videos.
+  $("#modeRow").classList.toggle("hidden", photo);
+  $("#modeHint").classList.toggle("hidden", photo);
+  $("#videoBtn").textContent = photo ? "Watermark photo" : "Upload and watermark";
   updateButtons();
 });
 
@@ -106,11 +113,12 @@ $("#strength").addEventListener("input", (e) => ($("#strengthVal").textContent =
 // ------------------------------------------------------------------ upload video
 $("#videoBtn").addEventListener("click", () => {
   if (!videoFile) return;
+  const photo = isPhoto(videoFile);
   const fd = new FormData();
   fd.append("strength", $("#strength").value);
-  fd.append("mode", $("#mode").value);
+  if (!photo) fd.append("mode", $("#mode").value);
   fd.append("watermarkId", $("#watermarkId").value.trim());
-  fd.append("video", videoFile);
+  fd.append(photo ? "image" : "video", videoFile);
   const xhr = new XMLHttpRequest();
   const bar = $("#uploadBar");
   bar.classList.remove("hidden");
@@ -125,19 +133,19 @@ $("#videoBtn").addEventListener("click", () => {
     updateButtons();
   };
   xhr.onerror = () => (alert("Upload failed"), bar.classList.add("hidden"), updateButtons());
-  xhr.open("POST", "/api/videos");
+  xhr.open("POST", photo ? "/api/images" : "/api/videos");
   xhr.send(fd);
 });
 
 // ------------------------------------------------------------------ video list
 const openPreviews = new Set();
 async function loadVideos() {
-  const res = await fetch("/api/videos");
-  if (res.status === 401) return setLocked(true);
-  const list = await res.json();
+  const [vr, ir] = await Promise.all([fetch("/api/videos"), fetch("/api/images")]);
+  if (vr.status === 401 || ir.status === 401) return setLocked(true);
+  const list = [...(await vr.json()), ...(await ir.json())].sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
   const ul = $("#videos");
   if (!list.length) return (ul.innerHTML = `<li class="empty">Nothing yet.</li>`);
-  ul.innerHTML = list.map(renderVideo).join("");
+  ul.innerHTML = list.map((v) => (v.kind === "image" ? renderImage(v) : renderVideo(v))).join("");
   const busy = list.some((v) => ["queued", "processing"].includes(v.stage));
   clearTimeout(loadVideos.t);
   if (busy) loadVideos.t = setTimeout(loadVideos, 1500);
@@ -178,6 +186,32 @@ function renderVideo(v) {
     ${actions ? `<div class="actions">${actions}</div>` : ""}${preview}
   </li>`;
 }
+
+function renderImage(v) {
+  const ok = v.status === "ready";
+  const status = ok
+    ? `<span class="tag ${v.selfCheck >= 0.95 ? "ok" : "bad"}">${v.selfCheck != null ? `${(v.selfCheck * 100).toFixed(1)}% self-check` : "ready"}</span>`
+    : `<span class="tag">working…</span>`;
+  const meta = ok ? `Photo · ${v.width}×${v.height} · ${String(v.format).toUpperCase()} · strength ${v.strength} · ${mb(v.sizeOut)} · ${(v.ms / 1000).toFixed(1)}s to process` : "Photo · watermarking…";
+  const actions = ok
+    ? `<a class="btn" href="/api/images/${v.id}/download">Download</a>
+       <button class="ghost" onclick="togglePreview('${v.id}')">${openPreviews.has(v.id) ? "Hide" : "Preview"}</button>
+       <button class="ghost" onclick="delImage('${v.id}')">Delete</button>`
+    : "";
+  const preview = ok && openPreviews.has(v.id) ? `<img class="photo" src="/api/images/${v.id}/download" alt="${esc(v.name)}" />` : "";
+  return `<li class="vid" id="v-${v.id}">
+    <div class="top"><span class="name" title="${esc(v.name)}">${esc(v.name)}</span>${status}</div>
+    ${v.watermarkId ? `<div class="meta">ID <span class="wid">${esc(v.watermarkId)}</span></div>` : ""}
+    <div class="meta">${meta}</div>
+    ${actions ? `<div class="actions">${actions}</div>` : ""}${preview}
+  </li>`;
+}
+
+window.delImage = async (id) => {
+  if (!confirm("Delete this photo and its watermark record? Screenshots of it will no longer be recognised.")) return;
+  await fetch(`/api/images/${id}`, { method: "DELETE" });
+  loadVideos();
+};
 
 window.togglePreview = (id) => (openPreviews.has(id) ? openPreviews.delete(id) : openPreviews.add(id), loadVideos());
 window.delVideo = async (id) => {
@@ -234,7 +268,7 @@ function showFoundBox(b) {
 }
 
 // ------------------------------------------------------------------ detect
-const VARIANT = { full: "whole image", "auto-region": "auto-detected video area", "manual-crop": "your selected box" };
+const VARIANT = { full: "whole image", "auto-region": "auto-detected picture area", "manual-crop": "your selected box" };
 const odds = (l) => (l <= -15 ? "less than 1 in 10¹⁵" : `about 1 in ${Math.round(10 ** -l).toLocaleString()}`);
 
 $("#imgBtn").addEventListener("click", async () => {
@@ -266,10 +300,10 @@ function renderResult(r) {
   const acc = `${(r.bitAccuracy * 100).toFixed(1)}%`;
   const head =
     r.verdict === "match"
-      ? `<h4>Watermark found</h4><p>${r.video.watermarkId ? `ID <span class="wid">${esc(r.video.watermarkId)}</span> · ` : ""}This screenshot comes from <b>${esc(r.video.name)}</b>.</p>`
+      ? `<h4>Watermark found</h4><p>${r.video.watermarkId ? `ID <span class="wid">${esc(r.video.watermarkId)}</span> · ` : ""}This screenshot comes from the ${r.video.kind === "image" ? "photo" : "video"} <b>${esc(r.video.name)}</b>.</p>`
       : r.verdict === "weak"
         ? `<h4>Possible match</h4><p>Weak signal for ${r.video.watermarkId ? `ID <span class="wid">${esc(r.video.watermarkId)}</span>, ` : ""}<b>${esc(r.video.name)}</b>. Try a less cropped screenshot or draw a box around the video.</p>`
-        : `<h4>No watermark found</h4><p>The closest registered video only agrees on ${acc} of bits, which is what a random image gives.</p>`;
+        : `<h4>No watermark found</h4><p>The closest registered video or photo only agrees on ${acc} of bits, which is what a random image gives.</p>`;
   const detail = r.verdict === "none" ? "" :
     `<p>${r.matchedBits} of ${r.nbits} bits match (${acc}), using the ${VARIANT[r.variant]}. Chance this is a false match: ${odds(r.log10FalsePositive)}.</p>`;
   const rows = r.candidates

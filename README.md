@@ -1,12 +1,13 @@
 # Video Watermark
 
-Invisible watermarking for videos with Meta's **PixelSeal**, built to recognise
-screenshots that clients take of your Facebook videos and send in Messenger.
+Invisible watermarking for videos and product photos with Meta's **PixelSeal**, built to recognise
+screenshots that clients take of your Facebook posts and send in Messenger.
 
 1. Upload a video. Every frame gets an invisible 256-bit watermark that is unique to that video.
    Optionally give it your own ID; matches then report that ID.
-2. Download the watermarked MP4 and post it on Facebook.
-3. Upload or paste a screenshot. The app finds the video area, extracts the bits and tells you which video it came from.
+   Photos (PNG, JPG, WebP, BMP) work the same way and are done in about a second.
+2. Download the watermarked MP4 or photo and post it on Facebook.
+3. Upload or paste a screenshot. The app finds the picture area, extracts the bits and tells you which video or photo it came from.
 
 ## Run
 
@@ -82,9 +83,9 @@ conda-forge picks a CUDA build when it detects an NVIDIA driver. `npm run setup`
 | Model worker | `worker/seal_worker.py` | Long-running PixelSeal process; Node talks to it with JSON lines over stdin/stdout |
 | Matching | `lib/match.js` | Compares extracted bits with every registered video and computes false-match odds |
 | Secret | `data/secret.key` | Turns a custom watermark ID into its 256 bits (HMAC-SHA256), so nobody else can compute the watermark for an ID. Created on first start. |
-| Registry | `data/videos.json` | Which 256-bit message belongs to which video. **Back this up**: without it, screenshots cannot be traced. |
+| Registry | `data/videos.json` | Which 256-bit message belongs to which video or photo (photos have `kind: "image"`). **Back this up**: without it, screenshots cannot be traced. |
 
-Two workers run: one for video jobs, one for screenshot checks, so checks stay fast while a video is processing.
+Two workers run: one for video jobs, one for screenshot checks and photos, so both stay fast while a video is processing.
 
 ## API
 
@@ -112,12 +113,29 @@ same machine forwards internet traffic to the app, make sure it sets `X-Forwarde
 |---|---|---|
 | POST | `/api/videos` | multipart `video`, optional `watermarkId` (up to 64 characters, unique), `strength` (0.05 to 1, default 0.4), `mode` (`smooth` or `robust`) and `callbackUrl`. Returns the video record (202). |
 | GET | `/api/videos`, `/api/videos/:id` | List, or poll one video |
-| GET | `/api/videos/:id/download` | Watermarked MP4 from this server. One download only: the file is then deleted (`downloadedAt` is set, later calls get 410) |
+| POST | `/api/videos/reserve` | JSON `watermarkId`, `link`, `fileName`, `sizeBytes` (up to 2 GB), optional `callbackUrl`. Creates a record with `stage` `awaiting_upload` (201); the file is uploaded afterwards. `link` is `{type:"product",productId,variantId?,note?}`, `{type:"knowledge",knowledgeTitle,note?}` or `{type:"note",note}` (note up to 1000 characters) |
+| PATCH | `/api/videos/:id` | JSON `{ link }`: change what the video is linked to |
+| POST | `/api/videos/:id/retry` | Run a `failed` video again (202). 409 with `code: "original_gone"` if the original was already removed (kept 7 days after the failure; the record is reset to `awaiting_upload`), or `code: "not_failed"` with the current `stage` if the video is not failed |
+| GET | `/api/videos/:id/download` | Watermarked MP4 from this server. The file is kept: download it as often as you like |
+| PUT | `/api/uploads/:videoId/chunks/:index?pass=` | Browser upload: raw body, one 50 MB piece (the last may be smaller), authorised by an upload pass (signed with the API key, 1 h) instead of the key. Same index again overwrites it. 400 if the index is out of range |
+| GET | `/api/uploads/:videoId?pass=` | Resume: `{ chunkBytes, total, received: [indexes] }` |
+| POST | `/api/uploads/:videoId/complete?pass=` | Join the pieces and start watermarking (202). 409 `{ missing }` if pieces are missing, 400 if the size or extension is wrong |
+| GET | `/api/videos/:id/file?pass=` | Download the watermarked MP4 with a download pass (10 min), as often as needed |
 | DELETE | `/api/videos/:id` | Remove the video and its watermark record |
-| POST | `/api/detect` | multipart `image`, optional `crop` as `[x,y,w,h]` JSON. Returns `verdict` (`match`, `weak`, `none`), `video`, `bitAccuracy`, `log10FalsePositive` |
+| POST | `/api/images` | multipart `image` (png, jpg, jpeg, webp, bmp; up to 50 MB and 50 megapixels), optional `watermarkId`, `strength` and `link` (a link object as JSON). Watermarks within the request and returns the record with `stage` `completed` and `downloadUrl` (201). 400 for an unreadable image or bad field |
+| GET | `/api/images`, `/api/images/:id` | List, or get one image |
+| GET | `/api/images/:id/download` | Watermarked image. PNG and BMP come back as PNG (transparency kept), JPEG and WebP as JPEG quality 95. The file is kept |
+| PATCH | `/api/images/:id` | JSON `{ link }`: change what the image is linked to |
+| DELETE | `/api/images/:id` | Remove the image and its watermark record |
+| POST | `/api/detect` | multipart `image`, optional `crop` as `[x,y,w,h]` JSON, optional `scope` (for example `s22`: only compare with videos and photos whose watermark ID starts with `s22-`; anything not like `s22` or `w1a2b3c4d` gives 400). Returns `verdict` (`match`, `weak`, `none`), `video` (the matched video or photo; its `kind` is `video` or `image`), `bitAccuracy`, `log10FalsePositive` |
 | GET | `/api/status` | Model, device, queue length |
 
+Pass routes answer 401 `{ error, reason }` for a bad or expired pass and 409 when the video is in the wrong state. Browsers may call them only from origins listed in `CORS_ORIGINS`.
+
 `/api/detect` is the endpoint your chatbot can call with images received in Messenger.
+
+Videos and photos share one registry: a watermark ID can be used once across both, and every record carries `kind`.
+The `/api/videos` routes only see videos and the `/api/images` routes only see photos.
 
 ### Video lifecycle
 
@@ -125,9 +143,12 @@ Read `stage` on a video record:
 
 | `stage` | Meaning |
 |---|---|
+| `awaiting_upload` | Reserved with `/api/videos/reserve`, no file yet |
 | `queued`, `processing` | Waiting for, or being watermarked (`progress` 0 to 1) |
-| `completed` | Done. Download it once from `/api/videos/:id/download` |
-| `failed` | Watermarking failed, see `error` |
+| `completed` | Done. Download it (any number of times) from `/api/videos/:id/download` |
+| `failed` | Watermarking failed, see `error`. Use `/api/videos/:id/retry` within 7 days |
+
+Lifecycle: `awaiting_upload` → `queued` → `processing` → `completed` or `failed`.
 
 ### Example
 
