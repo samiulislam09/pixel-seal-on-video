@@ -8,6 +8,7 @@ Protocol: one JSON object per line on stdin, one JSON object per line on stdout.
             {"id": "...", "type": "error", "error": "..."}
 Anything that is not protocol output goes to stderr.
 """
+import lib.session
 import json
 import os
 import subprocess

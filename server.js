@@ -18,6 +18,7 @@ import { chunkCount, receivedChunks, missingChunks, assemble, createClaims, CHUN
 import { asyncRoute, isPassRoute, retryDecision } from "./lib/http.js";
 import { IMAGE_EXT, isImage, isVideo, outputExt, parseLinkField, clampStrength } from "./lib/images.js";
 import { expiredMessage, retentionDays, videosToExpire } from "./lib/retention.js";
+import { startReplica } from "./lib/replica.js";
 import swaggerUi from "swagger-ui-express";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -51,6 +52,13 @@ const cpus = os.cpus().length;
 const embedWorker = new SealWorker({ name: "embed", python: PYTHON, script: SCRIPT, threads: Math.max(2, cpus - 2) });
 const detectWorker = new SealWorker({ name: "detect", python: PYTHON, script: SCRIPT, threads: 2 });
 const registry = new Registry(path.join(ROOT, "data", "videos.json"));
+
+// Copy the registry to the cloud matching service (xchat/videoimagematch), so screenshots are
+// still recognised while this PC is off. Off unless REPLICA_URL and REPLICA_SYNC_KEY are set.
+if (process.env.REPLICA_URL && process.env.REPLICA_SYNC_KEY) {
+  startReplica({ registry, url: process.env.REPLICA_URL, key: process.env.REPLICA_SYNC_KEY, allowMassRemoval: process.env.REPLICA_ALLOW_MASS_REMOVAL === "true" });
+  console.log(`[replica] copying the registry to ${process.env.REPLICA_URL}`);
+}
 
 // Secret used to turn a custom watermark ID into 256 bits. Without it, nobody can compute
 // the watermark for a given ID. The registry stores the bits, so detection never needs it.
